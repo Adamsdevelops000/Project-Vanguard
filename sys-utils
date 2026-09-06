@@ -1,0 +1,137 @@
+#!/bin/bash
+
+# --- CONFIG ---
+LOG_FILE="$HOME/.v_history.log"
+PID_FILE="/tmp/v_sentinel.pid"
+CONF_FILE="$HOME/.vanguard.cfg"
+C_B='\033[1;34m'; C_G='\033[1;32m'; C_R='\033[1;31m'; C_W='\033[1;37m'; NC='\033[0m'
+
+[ -f "$CONF_FILE" ] && source "$CONF_FILE"
+TEMP_ENABLED=${TEMP_ENABLED:-n}
+TEMP_LIMIT=${TEMP_LIMIT:-80}
+
+cleanup() { tput cnorm; exit 0; }
+trap cleanup SIGINT SIGTERM
+
+request_privs() {
+    if [ "$EUID" -ne 0 ]; then
+        echo -n "please enter your : "
+        sudo -v || return 1
+    fi
+}
+
+draw_header() {
+    clear
+    echo -e "${C_B}+-----------------------------------------------------------+${NC}"
+    echo -e "${C_B}|${NC} ${C_W}V A N G U A R D - S Y S${NC}    ${C_B}Professional Management${NC}    ${C_B}|${NC}"
+    echo -e "${C_B}+-----------------------------------------------------------+${NC}"
+}
+
+# --- TOOLS ---
+
+# 1. History
+view_history() {
+    draw_header
+    [ -f "$LOG_FILE" ] && tail -n 15 "$LOG_FILE" | sed 's/^/  /' || echo "  No anomalies recorded."
+    read -p "Press Enter..."
+}
+
+# 2. Power
+power_audit() {
+    draw_header
+    BAT=$(upower -e | grep battery | head -n 1)
+    [ -n "$BAT" ] && upower -i "$BAT" | grep -E "state|percentage|capacity" | sed 's/^/  [+] /' || echo "  [+] Mode: AC Power"
+    ps -eo pcpu,comm --sort=-%cpu | head -n 5 | tail -n 4 | awk '{printf "  [-] %-20s %s%%\n", $2, $1}'
+    read -p "Press Enter..."
+}
+
+# 3. Disk
+disk_detective() {
+    draw_header; request_privs
+    sudo du -h --max-depth=1 "$HOME" 2>/dev/null | sort -hr | head -n 5 | sed 's/^/  /'
+    mapfile -t WHALES < <(sudo find "$HOME" -type f -size +500M 2>/dev/null | head -n 5)
+    for i in "${!WHALES[@]}"; do echo "  [$i] $(sudo du -h "${WHALES[$i]}" | awk '{print $1}') ${WHALES[$i]}"; done
+    read -p "Delete? [0-4 / Enter for none]: " act
+    [[ "$act" =~ ^[0-4]$ ]] && sudo rm -i "${WHALES[$act]}"
+}
+
+# 4. 100-Point Audit
+full_audit() {
+    draw_header; request_privs
+    echo -e "  Scanning System Fundamentals..."
+    (
+        echo "1-Kernel: $(uname -r)"; echo "2-Uptime: $(uptime -p)"
+        echo "3-CPU: $(grep 'model name' /proc/cpuinfo | head -1 | cut -d: -f2)"
+        echo "21-IP-Loc: $(hostname -I | awk '{print $1}')"
+        echo "50-Files: $(sudo lsof -w -b 2>/dev/null | wc -l)"
+    ) | sed 's/^/  /'
+    read -p "Audit Done. Press Enter..."
+}
+
+# 5. Sentinel (Guard)
+sentinel_toggle() {
+    if [ -f "$PID_FILE" ]; then
+        kill $(cat "$PID_FILE") && rm "$PID_FILE" && echo "Sentinel Stopped."
+    else
+        while true; do
+            if [[ "$TEMP_ENABLED" == "y" ]]; then
+                t=$(( $(cat /sys/class/thermal/thermal_zone*/temp | head -n 1) / 1000 ))
+                if [ "$t" -ge "$TEMP_LIMIT" ]; then
+                    notify-send "HIGH TEMP" "CPU is at ${t}C!" --urgency=critical
+                    echo "$(date '+%H:%M') [!] THERMAL ALERT: ${t}C" >> "$LOG_FILE"
+                fi
+            fi
+            load=$(( 100 - $(top -bn1 | grep "Cpu(s)" | awk '{print $8}' | cut -d. -f1) ))
+            [ "$load" -gt 90 ] && echo "$(date '+%H:%M') [!] CPU SPIKE: ${load}%" >> "$LOG_FILE"
+            sleep 60
+        done & echo $! > "$PID_FILE" && echo "Sentinel Running."
+    fi
+    sleep 1
+}
+
+# 6. Reliability Monitor
+reliability_monitor() {
+    draw_header; request_privs
+    score=$(( 100 - ($(sudo journalctl -b 0 -p 0..3 | wc -l) / 2) ))
+    [ $score -lt 0 ] && score=0
+    echo -e "  SYSTEM RELIABILITY SCORE: ${score}/100"
+    echo -e "\n  Latest Critical Events:"
+    sudo journalctl -b 0 -p 0..3 --no-pager | tail -n 5 | sed 's/^/  /'
+    read -p "Press Enter..."
+}
+
+# 7. Thermal Setup
+setup_thermal() {
+    draw_header
+    read -p "Monitoring temps working? (y/n): " yno
+    if [[ "$yno" == "y" ]]; then
+        read -p "Warning temperature? (e.g. 80): " lim
+        echo -e "TEMP_ENABLED=y\nTEMP_LIMIT=$lim" > "$CONF_FILE"
+        echo "Saved. Restart Sentinel to apply."
+    else
+        echo "TEMP_ENABLED=n" > "$CONF_FILE"
+    fi
+    sleep 1
+}
+
+# Router for Direct CLI Access
+route_cmd() {
+    case "$1" in
+        1) view_history ;; 2) power_audit ;; 3) disk_detective ;;
+        4) full_audit ;; 5) sentinel_toggle ;; 6) reliability_monitor ;;
+        7) setup_thermal ;; *) return 1 ;;
+    esac
+}
+
+if [ -n "$1" ]; then route_cmd "$1" && exit 0; fi
+
+# Interactive Hub
+tput civis
+while true; do
+    draw_header
+    echo -e "  SENTINEL: $([ -f "$PID_FILE" ] && echo "ON" || echo "OFF") | TEMP LIMIT: $TEMP_LIMIT"C""
+    echo -e "${C_B}-----------------------------------------------------------${NC}"
+    echo -e "  1.History 2.Power 3.Disk 4.Audit 5.Guard 6.Reliability 7.Temp Q.Exit"
+    read -n 1 -p "  Selection >> " choice
+    case $choice in [1-7]) route_cmd "$choice" ;; [Qq]) cleanup ;; esac
+done
