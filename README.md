@@ -1,8 +1,4 @@
-To make your project user-friendly for people downloading the **.zip** file from GitHub, you should add this **Quickstart Guide** to your `README.md` or as a separate file named `QUICKSTART.txt` inside the zip.
 
-Here is the exact text and command set you should provide to your users:
-
----
 
 #  Vanguard Sys-Utils: Quickstart Guide
 
